@@ -1,4 +1,9 @@
-import { BadRequestException, Injectable, OnModuleInit } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  OnModuleInit,
+} from '@nestjs/common';
 import { ethers } from 'ethers';
 import { ConfigService } from '@nestjs/config';
 import { GelatoRelay, SponsoredCallRequest } from '@gelatonetwork/relay-sdk';
@@ -7,6 +12,7 @@ import { Queue } from 'bullmq';
 
 @Injectable()
 export class Web3Service implements OnModuleInit {
+  private readonly logger = new Logger(Web3Service.name);
   private arbitrumProvider: ethers.JsonRpcProvider;
   private optimismProvider: ethers.JsonRpcProvider;
   private walletArbitrum: ethers.Wallet;
@@ -14,7 +20,6 @@ export class Web3Service implements OnModuleInit {
   private arbitrumContract: ethers.Contract;
   private optimismContract: ethers.Contract;
   private relay: GelatoRelay;
-  private GELATO_API_KEY: string;
   private contractAbi: string[];
   private mintQueue: Queue;
 
@@ -22,7 +27,7 @@ export class Web3Service implements OnModuleInit {
     private configService: ConfigService,
     private readonly transactionsService: TransactionsService,
   ) {
-    console.log('Initializing web3 service');
+    this.logger.log('Initializing web3 service');
     // Setup Providers
     this.arbitrumProvider = new ethers.JsonRpcProvider(
       this.configService.get<string>('ARBITRUM_RPC'),
@@ -48,11 +53,8 @@ export class Web3Service implements OnModuleInit {
       this.optimismProvider,
     );
 
-    // this.wallet = new ethers.Wallet(formattedPrivateKey, this.arbitrumProvider);
-
     // Gelato Relay
     this.relay = new GelatoRelay();
-    this.GELATO_API_KEY = this.configService.get<string>('GELATO_API_KEY');
 
     // Contract Addresses & ABI
     const arbitrumContractAddress =
@@ -65,7 +67,7 @@ export class Web3Service implements OnModuleInit {
       'event Transfer(address indexed from, address indexed to, uint256 value)',
       'function burn(uint256 amount) external',
       'function mint(address to, uint256 amount) external',
-      'function transfer(address to, uint256 amount) external returns (bool)', // ✅ Ensure it has `returns (bool)`
+      'function transfer(address to, uint256 amount) external returns (bool)',
       'function balanceOf(address owner) external view returns (uint256)',
       'function bridgeOperator() external view returns (address)',
     ];
@@ -83,18 +85,20 @@ export class Web3Service implements OnModuleInit {
       this.walletOptimism,
     ) as ethers.Contract;
 
-    this.mintQueue = new Queue('gelatoMintQueue', {
+    // defining my redis bullmq queue
+    this.mintQueue = new Queue(process.env.REDIS_QUEUE_NAME, {
       connection: {
         host: process.env.REDIS_HOST || 'localhost',
         port: Number(process.env.REDIS_PORT) || 6379,
       },
     });
 
-    this.schedulePeriodicCheck();
+    // periodically check for gelato task status
+    this.schedulePeriodicCheckForGelatoTransactions();
   }
 
   async onModuleInit() {
-    console.log('Listening to burn events on Arbitrum & Optimism...');
+    this.logger.log('Listening to burn events on Arbitrum & Optimism...');
     await this.listenToBurnEvents();
   }
 
@@ -104,7 +108,7 @@ export class Web3Service implements OnModuleInit {
     network: 'arbitrum' | 'optimism',
     signature: string,
   ) {
-    console.log(`Burning ${amount} tokens for ${user} on ${network}`);
+    this.logger.log(`Burning ${amount} tokens for ${user} on ${network}`);
 
     // ✅ Get contract & signer
     const contractAddress =
@@ -140,7 +144,7 @@ export class Web3Service implements OnModuleInit {
     }
 
     // Burn Tokens Directly from User
-    console.log('Sending burn transaction...');
+    this.logger.log('Sending burn transaction...');
     const burnAmount = ethers.parseEther(amount);
     const tx = await contract.burnFrom(user, burnAmount);
     await tx.wait();
@@ -155,7 +159,7 @@ export class Web3Service implements OnModuleInit {
       status: 'completed',
     });
 
-    console.log(`Burn successful on ${network}. TX: ${tx.hash}`);
+    this.logger.log(`Burn successful on ${network}. TX: ${tx.hash}`);
 
     return { success: true, txHash: tx.hash };
   }
@@ -169,7 +173,7 @@ export class Web3Service implements OnModuleInit {
     targetNetwork: 'arbitrum' | 'optimism',
     txHashOriginator: string,
   ) {
-    console.log(`🚀 Minting to ${user} on ${targetNetwork} via Gelato`);
+    this.logger.log(`🚀 Minting to ${user} on ${targetNetwork} via Gelato`);
 
     // ✅ Get the contract address for the target network
     const contractAddress =
@@ -195,7 +199,7 @@ export class Web3Service implements OnModuleInit {
       mintAmount,
     ]);
 
-    console.log('🔹 Encoded Mint Transaction Data:', mintTxData);
+    this.logger.log('🔹 Encoded Mint Transaction Data:', mintTxData);
 
     // ✅ **Sign the transaction before sending to Gelato**
     const tx = {
@@ -205,7 +209,7 @@ export class Web3Service implements OnModuleInit {
     };
 
     const signedTx = await signer.signTransaction(tx);
-    // console.log('🔹 Signed Mint Transaction:', signedTx);
+    // this.logger.log('🔹 Signed Mint Transaction:', signedTx);
 
     // 🔹 **Submit the signed transaction via Gelato Relay**
     const relayRequest: SponsoredCallRequest = {
@@ -234,7 +238,7 @@ export class Web3Service implements OnModuleInit {
     //   status: 'pending',
     // });
 
-    console.log(`✅ Mint request sent via Gelato. Task ID: ${taskId}`);
+    this.logger.log(`✅ Mint request sent via Gelato. Task ID: ${taskId}`);
     return { success: true, taskId };
   }
 
@@ -243,7 +247,7 @@ export class Web3Service implements OnModuleInit {
    * - Detects burns and triggers minting on the opposite network
    */
   async listenToBurnEvents() {
-    console.log('🚀 Listening for burn events on Arbitrum & Optimism...');
+    this.logger.log('🚀 Listening for burn events on Arbitrum & Optimism...');
 
     const burnEventTopic = ethers.id('TokensBurned(address,uint256)');
     let lastArbitrumBlock = await this.arbitrumProvider.getBlockNumber();
@@ -260,11 +264,11 @@ export class Web3Service implements OnModuleInit {
       try {
         const currentBlock = await provider.getBlockNumber();
         if (lastCheckedBlock === currentBlock) {
-          console.log(`🔍 No new blocks on ${network}, skipping poll.`);
+          this.logger.log(`🔍 No new blocks on ${network}, skipping poll.`);
           return currentBlock;
         }
 
-        // console.log(
+        // this.logger.log(
         //   `Fetching logs from blocks ${lastCheckedBlock} to ${currentBlock} on ${network}...`,
         // );
         const logs = await provider.getLogs({
@@ -276,26 +280,26 @@ export class Web3Service implements OnModuleInit {
 
         for (const log of logs) {
           if (processedTxs.has(log.transactionHash)) {
-            console.log(`Already processed tx: ${log.transactionHash}`);
+            this.logger.log(`Already processed tx: ${log.transactionHash}`);
             continue;
           }
 
           const parsedLog = contract.interface.parseLog(log);
 
-          // console.log('~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~');
-          // console.log('details of event');
-          // console.log('log', log);
-          // console.log('log.transactionHash', log.transactionHash);
-          // console.log('parsedLog', parsedLog);
-          // console.log('~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~');
+          // this.logger.log('~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~');
+          // this.logger.log('details of event');
+          // this.logger.log('log', log);
+          // this.logger.log('log.transactionHash', log.transactionHash);
+          // this.logger.log('parsedLog', parsedLog);
+          // this.logger.log('~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~');
           const { user, amount } = parsedLog.args;
 
-          console.log(
+          this.logger.log(
             `Burn event detected on ${network}: ${ethers.formatEther(amount)} tokens from ${user}`,
           );
 
           // save its future transaction entry, so that i can show its detail on client side
-          console.log(
+          this.logger.log(
             'Saving future mint transaction handle, for originating tx',
             log.transactionHash,
           );
@@ -325,20 +329,20 @@ export class Web3Service implements OnModuleInit {
             },
           );
 
-          console.log(`Event published to Redis`);
+          this.logger.log(`Event published to Redis`);
 
           processedTxs.add(log.transactionHash);
         }
 
         return currentBlock;
       } catch (error) {
-        console.error(`Error fetching logs for ${network}:`, error);
+        this.logger.error(`Error fetching logs for ${network}:`, error);
         return lastCheckedBlock;
       }
     };
 
     setInterval(async () => {
-      console.log('🔄 Polling for new burn events...');
+      this.logger.log('🔄 Polling for new burn events...');
       lastArbitrumBlock = await pollLogs(
         this.arbitrumProvider,
         this.arbitrumContract,
@@ -355,7 +359,7 @@ export class Web3Service implements OnModuleInit {
       );
     }, 15000);
 
-    console.log('✅ Started polling for burn events (no eth_newFilter)');
+    this.logger.log('✅ Started polling for burn events (no eth_newFilter)');
   }
 
   /**
@@ -374,7 +378,7 @@ export class Web3Service implements OnModuleInit {
         optimismBalance: ethers.formatEther(balanceOptimism),
       };
     } catch (error) {
-      console.error('Error fetching user balance:', error);
+      this.logger.error('Error fetching user balance:', error);
       throw new Error('Failed to fetch user balance.');
     }
   }
@@ -382,7 +386,9 @@ export class Web3Service implements OnModuleInit {
   //////////// Admin methods ///////////////
   // **Self Mint Tokens (Bridge Operator)**
   async selfMintTokens(amount: bigint, network: 'arbitrum' | 'optimism') {
-    console.log(`🚀 Minting ${amount} tokens to Bridge Operator on ${network}`);
+    this.logger.log(
+      `🚀 Minting ${amount} tokens to Bridge Operator on ${network}`,
+    );
 
     const targetContract =
       network === 'arbitrum' ? this.arbitrumContract : this.optimismContract;
@@ -391,22 +397,13 @@ export class Web3Service implements OnModuleInit {
         ? await this.walletArbitrum.getAddress()
         : await this.walletOptimism.getAddress();
 
-    // const currentBridgeOperator = await targetContract.bridgeOperator();
-    // console.log(
-    //   `🔹 Current Bridge Operator on ${network}: ${currentBridgeOperator}`,
-    // );
-    // if (currentBridgeOperator.toLowerCase() !== operatorWallet.toLowerCase()) {
-    //   console.error('❌ Bridge Operator mismatch! Cannot mint.');
-    //   return;
-    // }
-
     const tx = await targetContract.mint(
       operatorWallet,
       ethers.parseEther(amount.toString()),
     );
     await tx.wait();
 
-    console.log(`Minted ${amount} tokens to Bridge Operator on ${network}`);
+    this.logger.log(`Minted ${amount} tokens to Bridge Operator on ${network}`);
     return { success: true, txHash: tx.hash };
   }
 
@@ -415,7 +412,10 @@ export class Web3Service implements OnModuleInit {
     const walletArbitrumAddress = await this.walletArbitrum.getAddress();
     const walletOptimismAddress = await this.walletOptimism.getAddress();
 
-    console.log('🔍 Checking self balance for wallet:', walletArbitrumAddress);
+    this.logger.log(
+      '🔍 Checking self balance for wallet:',
+      walletArbitrumAddress,
+    );
 
     try {
       // Fetch balances in parallel
@@ -424,8 +424,8 @@ export class Web3Service implements OnModuleInit {
         this.optimismContract.balanceOf(walletOptimismAddress),
       ]);
 
-      console.log('balanceArbitrum', ethers.formatEther(balanceArbitrum));
-      console.log('balanceOptimism', ethers.formatEther(balanceOptimism));
+      this.logger.log('balanceArbitrum', ethers.formatEther(balanceArbitrum));
+      this.logger.log('balanceOptimism', ethers.formatEther(balanceOptimism));
 
       return {
         walletArbitrumAddress: walletArbitrumAddress,
@@ -434,7 +434,7 @@ export class Web3Service implements OnModuleInit {
         optimismBalance: ethers.formatEther(balanceOptimism),
       };
     } catch (error) {
-      console.error('❌ Error fetching balances:', error);
+      this.logger.error('Error fetching balances:', error);
       throw new Error('Failed to fetch balances');
     }
   }
@@ -445,7 +445,7 @@ export class Web3Service implements OnModuleInit {
     amount: string,
     network: 'arbitrum' | 'optimism',
   ) {
-    console.log(
+    this.logger.log(
       `🚀 Sending ${amount} tokens from Bridge Operator to ${to} on ${network}`,
     );
 
@@ -456,9 +456,11 @@ export class Web3Service implements OnModuleInit {
         ? await this.walletArbitrum.getAddress()
         : await this.walletOptimism.getAddress();
 
-    console.log('🔍 Checking Bridge Operator balance...');
+    this.logger.log('🔍 Checking Bridge Operator balance...');
     const balance = await targetContract.balanceOf(bridgeOperator);
-    console.log(`💰 Current Balance: ${ethers.formatEther(balance)} tokens`);
+    this.logger.log(
+      `💰 Current Balance: ${ethers.formatEther(balance)} tokens`,
+    );
 
     // ❌ Ensure enough balance before transferring
     if (balance < ethers.parseEther(amount)) {
@@ -466,11 +468,11 @@ export class Web3Service implements OnModuleInit {
     }
 
     // Transfer
-    console.log(`🔹 Executing transfer...`);
+    this.logger.log(`🔹 Executing transfer...`);
     const tx = await targetContract.transfer(to, ethers.parseEther(amount));
     await tx.wait();
 
-    console.log(`✅ Transferred ${amount} tokens to ${to} on ${network}`);
+    this.logger.log(`✅ Transferred ${amount} tokens to ${to} on ${network}`);
     return { success: true, txHash: tx.hash };
   }
 
@@ -482,13 +484,13 @@ export class Web3Service implements OnModuleInit {
       `https://api.gelato.digital/tasks/status/${taskId}`,
     );
     const result = await response.json();
-    console.log(result);
+    this.logger.log(result);
 
     if (
       result.task.taskState === 'ExecSuccess' &&
       result.task.transactionHash
     ) {
-      console.log(
+      this.logger.log(
         `✅ Gelato Task ${taskId} executed! TX Hash: ${result.task.transactionHash}`,
       );
 
@@ -498,16 +500,19 @@ export class Web3Service implements OnModuleInit {
         status: 'completed',
       });
     } else if (result.task.taskState === 'Cancelled') {
-      console.log(`❌ Gelato Task ${taskId} failed!`);
+      this.logger.log(`❌ Gelato Task ${taskId} failed!`);
       await this.transactionsService.updateTransactionByTaskId(taskId, {
         status: 'failed',
       });
     }
   }
 
-  async schedulePeriodicCheck() {
+  /**
+   * Check for Gelato transactions status
+   */
+  async schedulePeriodicCheckForGelatoTransactions() {
     setInterval(async () => {
-      console.log('🔍 Checking pending Gelato transactions...');
+      this.logger.log('🔍 Checking pending Gelato transactions...');
       const pendingTransactions =
         await this.transactionsService.getPendingTransactions();
 

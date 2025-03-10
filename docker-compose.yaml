@@ -1,0 +1,48 @@
+version: '3.8'
+
+services:
+  gelato-api:
+    build: .
+    container_name: gelato-api
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - gelato-network
+
+  postgres:
+    image: postgres:16.4-alpine
+    restart: always
+    ports:
+      - ${DATABASE_PORT}:5432
+    volumes:
+      - ./pg_data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_USER: ${DATABASE_USERNAME}
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD}
+    networks:
+      - gelato-network
+
+  adminer:
+    image: adminer
+    restart: always
+    ports:
+      - 8080:8080
+
+  redis:
+    image: redis:7-alpine
+    restart: always
+    ports:
+      - 6379:6379
+    volumes:
+      - ./redis_data:/data
+    networks:
+      - gelato-network
+
+networks:
+  gelato-network:
+    driver: bridge

@@ -48,9 +48,6 @@ export class BridgeController {
     description: 'Invalid request or transaction failed.',
   })
   async burnTokens(@Body() body: BurnRequestDto) {
-    // console.log('body', body);
-
-    // return {'success': 'success'};
     return this.web3Service.burnTokens(
       body.user,
       body.amount,

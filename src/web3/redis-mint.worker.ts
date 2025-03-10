@@ -1,17 +1,18 @@
-import { Injectable, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Worker } from 'bullmq';
-import { Web3Service } from './web3.service'; // Import Web3 service for minting
+import { Web3Service } from './web3.service';
 
 @Injectable()
 export class RedisMintWorker implements OnModuleInit {
+  private readonly logger = new Logger(RedisMintWorker.name);
   private worker: Worker;
 
   constructor(private readonly web3Service: Web3Service) {
-    console.log('Setting up redis bullmq for gelatoMintJob');
+    this.logger.log('Setting up redis bullmq for gelatoMintJob');
     this.worker = new Worker(
-      'gelatoMintQueue',
+      process.env.REDIS_QUEUE_NAME,
       async (job) => {
-        console.log(`Processing Mint Job: ${JSON.stringify(job.data)}`);
+        this.logger.log(`Processing Mint Job: ${JSON.stringify(job.data)}`);
 
         const { user, amount, targetNetwork, txHashOriginator } = job.data;
 
@@ -22,9 +23,9 @@ export class RedisMintWorker implements OnModuleInit {
             targetNetwork,
             txHashOriginator,
           );
-          console.log(`✅ Mint completed for ${user} on ${targetNetwork}`);
+          this.logger.log(`Mint completed for ${user} on ${targetNetwork}`);
         } catch (error) {
-          console.error(`❌ Minting failed:`, error);
+          this.logger.error(`Minting failed:`, error);
           throw error;
         }
       },
@@ -37,23 +38,29 @@ export class RedisMintWorker implements OnModuleInit {
     );
 
     this.worker.on('completed', (job) => {
-      console.log(`Mint job completed: ${job.id}`);
+      this.logger.log(`Mint job completed: ${job.id}`);
     });
 
     this.worker.on('failed', async (job, err) => {
-      console.error(`Mint job failed: ${job.id}`, err);
+      this.logger.error(`Mint job failed: ${job.id}`, err);
 
       // Automatically retry up to 3 times with exponential backoff
       if (job.attemptsMade < 3) {
-        console.log(`Retrying job ${job.id} (attempt ${job.attemptsMade + 1})`);
+        this.logger.log(
+          `Retrying job ${job.id} (attempt ${job.attemptsMade + 1})`,
+        );
         await job.retry();
       } else {
-        console.error(`🚨 Job ${job.id} permanently failed after 3 attempts`);
+        this.logger.error(`Job ${job.id} permanently failed after 3 attempts`);
+        this.logger.error(
+          `logging failed job detailed`,
+          JSON.stringify(job.data),
+        );
       }
     });
   }
 
   async onModuleInit() {
-    console.log('🔄 Mint Worker initialized...');
+    this.logger.log('Mint Worker initialized...');
   }
 }
